@@ -73,6 +73,8 @@ This section contains the contents of the repository's files.
 
 <file path=".gitignore">
 node_modules
+.env
+env
 </file>
 
 <file path="app.js">
@@ -81,15 +83,41 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
+const hpp = require('hpp');
+
 const db = require('./src/models');
-const initCronJobs = require('./src/services/cron.service'); // Import Cron
+const initCronJobs = require('./src/services/cron.service');
 
 const app = express();
 
+// 1. Security Headers
 app.use(helmet());
-app.use(cors());
+
+// 2. CORS Configuration (Updated for Auth Integration)
+// We allow the specific frontend origin to send credentials (cookies/headers)
+const corsOptions = {
+  origin: ['http://localhost:5173', process.env.CLIENT_URL], // Add production URL in .env
+  credentials: true, 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+
+app.use(cors(corsOptions));
+
+// 3. Rate Limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, 
+  max: 100, 
+  message: 'Too many requests from this IP.'
+});
+app.use('/api', limiter);
+
+// 4. Prevent Parameter Pollution
+app.use(hpp());
+
 app.use(express.json());
-app.use(morgan('dev'));
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Routes
 app.use('/api/v1/auth', require('./src/api/auth.routes'));
@@ -97,19 +125,18 @@ app.use('/api/v1/admin', require('./src/api/admin.routes'));
 app.use('/api/v1/listings', require('./src/api/listing.routes'));
 app.use('/api/v1', require('./src/api/lead.routes'));
 app.use('/api/v1/valuation', require('./src/api/valuation.routes'));
-app.use('/api/v1/payments', require('./src/api/payment.routes')); // New Route
+app.use('/api/v1/payments', require('./src/api/payment.routes'));
 
+// Specific Controller Routes
 const leadController = require('./src/controllers/lead.controller');
 const { protect, authorize } = require('./src/middleware/auth.middleware');
 app.post('/api/v1/leads', protect, authorize('buyer'), leadController.createLead);
+app.get('/api/v1/agent/leads', protect, authorize('agent'), leadController.getAgentLeads);
 
 // Sync DB & Start
 db.sequelize.sync({ alter: true }).then(() => {
     console.log("✅ Database Synced");
-    
-    // Initialize Cron Jobs
     initCronJobs();
-    
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 }).catch((err) => {
@@ -119,7 +146,7 @@ db.sequelize.sync({ alter: true }).then(() => {
 
 <file path="package.json">
 {
-  "name": "biztech-buysell-backend",
+  "name": "biztech-bizmarketplace-backend",
   "version": "1.0.0",
   "main": "app.js",
   "scripts": {
@@ -131,11 +158,14 @@ db.sequelize.sync({ alter: true }).then(() => {
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "express-rate-limit": "^8.2.1",
     "helmet": "^7.1.0",
+    "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "mysql2": "^3.6.5",
     "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.11",
     "sequelize": "^6.35.1"
   },
   "devDependencies": {
@@ -150,9 +180,19 @@ const router = express.Router();
 const controller = require('../controllers/admin.controller');
 const { protect, authorize } = require('../middleware/auth.middleware');
 
-router.post('/create-agent', protect, authorize('admin'), controller.createAgent);
-router.get('/pending-listings', protect, authorize('admin'), controller.getPendingListings);
-router.post('/assign-agent', protect, authorize('admin'), controller.assignAgent);
+// Apply protection to all admin routes
+router.use(protect);
+router.use(authorize('admin'));
+
+// Stats & User Management
+router.get('/stats', controller.getDashboardStats);
+router.get('/users', controller.getUsers);
+router.put('/users/:id/status', controller.updateUserStatus);
+
+// Listing & Agent Management
+router.post('/create-agent', controller.createAgent);
+router.get('/pending-listings', controller.getPendingListings);
+router.post('/assign-agent', controller.assignAgent);
 
 module.exports = router;
 </file>
@@ -163,6 +203,7 @@ const router = express.Router();
 const controller = require('../controllers/auth.controller');
 
 router.post('/register', controller.register);
+router.post('/verify-email', controller.verifyEmail); // New Route
 router.post('/login', controller.login);
 
 module.exports = router;
@@ -262,21 +303,77 @@ const bcrypt = require('bcryptjs');
 const User = db.User;
 const Listing = db.Listing;
 
-exports.createAgent = async (req, res) => {
+// @desc    Get Admin Dashboard Stats (Dynamic Counts)
+exports.getDashboardStats = async (req, res) => {
     try {
-        const { name, email, password } = req.body;
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const user = await User.create({ 
-            name, email, password: hashedPassword, role: 'agent' 
+        const totalUsers = await User.count();
+        const pendingApprovals = await User.count({ 
+            where: { account_status: 'pending', role: 'seller' } 
         });
-        res.status(201).json({ success: true, data: { id: user.id, email: user.email } });
+        const activeListings = await Listing.count({ 
+            where: { status: 'active' } 
+        });
+        const totalAgents = await User.count({ 
+            where: { role: 'agent' } 
+        });
+        
+        // Dynamic Revenue Calculation: AED 499 for every active Premium listing
+        const premiumCount = await Listing.count({ 
+            where: { tier: 'premium', status: 'active' } 
+        });
+        const monthlyRevenue = premiumCount * 499;
+
+        res.status(200).json({
+            success: true,
+            data: {
+                totalUsers,
+                pendingApprovals,
+                activeListings,
+                totalAgents,
+                monthlyRevenue
+            }
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
 };
 
+// @desc    Get All Users with Filters
+exports.getUsers = async (req, res) => {
+    try {
+        const { role, status } = req.query;
+        let whereClause = {};
+        if (role) whereClause.role = role;
+        if (status) whereClause.account_status = status;
+
+        const users = await User.findAll({ 
+            where: whereClause,
+            attributes: { exclude: ['password', 'otp'] },
+            order: [['createdAt', 'DESC']]
+        });
+        res.status(200).json({ success: true, data: users });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Approve/Reject Seller Account
+exports.updateUserStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'active' or 'rejected'
+
+        const user = await User.findByPk(id);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        await user.update({ account_status: status });
+        res.status(200).json({ success: true, message: `User is now ${status}` });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get listings that need an agent assigned
 exports.getPendingListings = async (req, res) => {
     try {
         const listings = await Listing.findAll({
@@ -289,22 +386,33 @@ exports.getPendingListings = async (req, res) => {
     }
 };
 
+// @desc    Assign Agent and Activate Ad
 exports.assignAgent = async (req, res) => {
     try {
         const { listingId, agentId } = req.body;
-        
         const listing = await Listing.findByPk(listingId);
         if(!listing) return res.status(404).json({ message: "Listing not found" });
 
-        const agent = await User.findOne({ where: { id: agentId, role: 'agent' } });
-        if(!agent) return res.status(404).json({ message: "Agent not found" });
-
         await listing.update({
             assignedAgentId: agentId,
-            status: 'active' // SRS: Status active upon assignment
+            status: 'active' 
         });
 
-        res.status(200).json({ success: true, message: "Agent assigned, Listing Active", data: listing });
+        res.status(200).json({ success: true, message: "Agent assigned and Listing activated" });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Create Internal Agent Account
+exports.createAgent = async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await User.create({ 
+            name, email, password: hashedPassword, role: 'agent', is_verified: true, account_status: 'active' 
+        });
+        res.status(201).json({ success: true, message: "Agent created" });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -315,41 +423,139 @@ exports.assignAgent = async (req, res) => {
 const db = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { sendEmail } = require('../services/email.service');
+const { Op } = require('sequelize');
 const User = db.User;
 
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
+const generateOTP = () => {
+    return Math.floor(100000 + Math.random() * 900000).toString(); // 6 digit OTP
+};
+
 exports.register = async (req, res) => {
     try {
-        const { name, email, password, role, agreed_commission, financial_means } = req.body;
+        const { name, email, password, role, agreed_commission, financial_means, mobile } = req.body;
 
-        // SRS Rule: Seller must agree to commission
+        // Validations
         if (role === 'seller' && agreed_commission !== true) {
             return res.status(400).json({ message: "Sellers must agree to the 1% commission fee." });
-        }
-
-        // Security: Prevent creating admin/agent publicly
-        if (role === 'admin' || role === 'agent') {
-            return res.status(403).json({ message: "Restricted role creation." });
         }
 
         const userExists = await User.findOne({ where: { email } });
         if (userExists) return res.status(400).json({ message: "User already exists" });
 
+        // Hash Password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        const user = await User.create({
-            name, email, password: hashedPassword, role, agreed_commission, financial_means
+        // Generate OTP (Expires in 10 minutes)
+        const otp = generateOTP();
+        const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+
+        // Create User (Not verified yet)
+        await User.create({
+            name, 
+            email, 
+            password: hashedPassword, 
+            role, 
+            mobile,
+            agreed_commission, 
+            financial_means,
+            otp: otp,
+            otp_expires_at: otpExpires,
+            is_verified: false,
+            account_status: 'pending' // Everyone starts pending until email verified
         });
+
+        // Send OTP Email
+        await sendEmail(email, "Verify Your Account", `Your OTP is: ${otp}. It expires in 10 minutes.`);
 
         res.status(201).json({
             success: true,
-            token: generateToken(user.id),
-            user: { id: user.id, name: user.name, role: user.role }
+            message: "Registration successful. Please check your email for the OTP.",
+            email: email
         });
+
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.verifyEmail = async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+
+        const user = await User.findOne({ where: { email } });
+
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        if (user.is_verified) {
+            return res.status(400).json({ message: "User is already verified" });
+        }
+
+        // Check OTP and Expiry
+        if (user.otp !== otp) {
+            return res.status(400).json({ message: "Invalid OTP" });
+        }
+
+        if (new Date() > user.otp_expires_at) {
+            return res.status(400).json({ message: "OTP has expired" });
+        }
+
+        // Update User Status
+        let responseData = {};
+        
+        if (user.role === 'buyer') {
+            // Buyers are automatically activated after email verification
+            await user.update({
+                is_verified: true,
+                account_status: 'active',
+                otp: null,
+                otp_expires_at: null
+            });
+
+            // Log them in immediately
+            const token = generateToken(user.id);
+            responseData = {
+                success: true,
+                message: "Email verified and logged in successfully.",
+                token,
+                user: { id: user.id, name: user.name, role: user.role, status: 'active' }
+            };
+
+        } else if (user.role === 'seller') {
+            // Sellers verified email, but still need Admin approval
+            await user.update({
+                is_verified: true,
+                account_status: 'pending', // Remains pending for Admin
+                otp: null,
+                otp_expires_at: null
+            });
+
+            responseData = {
+                success: true,
+                message: "Email verified. Your account is pending Admin approval.",
+                requireApproval: true
+            };
+        } else {
+            // Agent/Admin flow (if applicable)
+             await user.update({
+                is_verified: true,
+                account_status: 'pending',
+                otp: null,
+                otp_expires_at: null
+            });
+             responseData = { success: true, message: "Verified." };
+        }
+
+        res.status(200).json(responseData);
+
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -360,15 +566,29 @@ exports.login = async (req, res) => {
         const { email, password } = req.body;
         const user = await User.findOne({ where: { email } });
 
-        if (user && (await bcrypt.compare(password, user.password))) {
-            res.json({
-                success: true,
-                token: generateToken(user.id),
-                user: { id: user.id, name: user.name, role: user.role }
-            });
-        } else {
-            res.status(401).json({ message: "Invalid credentials" });
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(401).json({ message: "Invalid credentials" });
         }
+
+        // Check if Email Verified
+        if (!user.is_verified) {
+            return res.status(403).json({ message: "Please verify your email address first." });
+        }
+
+        // Check Account Status (For Sellers waiting for admin)
+        if (user.account_status === 'pending') {
+            return res.status(403).json({ message: "Your account is pending Admin approval." });
+        }
+
+        if (user.account_status === 'rejected') {
+            return res.status(403).json({ message: "Your account has been rejected. Contact support." });
+        }
+
+        res.json({
+            success: true,
+            token: generateToken(user.id),
+            user: { id: user.id, name: user.name, role: user.role }
+        });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
@@ -461,8 +681,15 @@ exports.createListing = async (req, res) => {
 
         const listing = await Listing.create({
             sellerId: req.user.id,
-            title, industry, price, net_profit, turnover, region,
-            legal_business_name, full_address, owner_name,
+            title, 
+            industry, 
+            price, 
+            net_profit, 
+            turnover, 
+            region,
+            legal_business_name, 
+            full_address, 
+            owner_name,
             tier: tier || 'basic',
             status: 'pending'
         });
@@ -475,23 +702,23 @@ exports.createListing = async (req, res) => {
 
 exports.getListings = async (req, res) => {
     try {
-        const { location, priceMax, industry } = req.query;
+        const { location, priceMax, industry, searchTerm } = req.query;
         let whereClause = { status: 'active' };
 
         if (location) whereClause.region = { [Op.like]: `%${location}%` };
         if (industry) whereClause.industry = { [Op.like]: `%${industry}%` };
         if (priceMax) whereClause.price = { [Op.lte]: priceMax };
+        if (searchTerm) whereClause.title = { [Op.like]: `%${searchTerm}%` };
 
         const listings = await Listing.findAll({
             where: whereClause,
             order: [
-                ['tier', 'DESC'], // Premium first (DESC because 'premium' > 'basic' alphabetically? No, check enum order or map it)
-                // Actually 'premium' > 'basic' string wise works, or use custom logic. 
-                // Better approach:
+                // SRS: Paid Ads (Premium) get "Preferred Placement" on the list
                 [db.sequelize.literal("FIELD(tier, 'premium', 'basic')"), 'ASC'],
                 ['createdAt', 'DESC']
             ],
-            attributes: { exclude: ['legal_business_name', 'full_address', 'owner_name'] } // Masking Private Data
+            // Masking Private Data from the public list for confidentiality
+            attributes: { exclude: ['legal_business_name', 'full_address', 'owner_name'] }
         });
 
         res.status(200).json({ success: true, count: listings.length, data: listings });
@@ -505,7 +732,8 @@ exports.getListingById = async (req, res) => {
         const listing = await Listing.findByPk(req.params.id);
         if (!listing) return res.status(404).json({ message: "Listing not found" });
 
-        // Logic for Data Masking (NFR-SE-001)
+        // Logic for Data Masking (Confidentiality)
+        // Private data is only visible to Admins, the Seller of the ad, or the Assigned Agent
         let isAuthorized = false;
         
         if (req.user) {
@@ -517,12 +745,12 @@ exports.getListingById = async (req, res) => {
         let response = listing.toJSON();
 
         if (!isAuthorized) {
-            // Mask Private Data
+            // Mask Private Data if the viewer is not authorized
             delete response.legal_business_name;
             delete response.full_address;
             delete response.owner_name;
             
-            // Increment view count
+            // Increment view count for public views
             await listing.increment('views');
         }
 
@@ -538,7 +766,7 @@ exports.requestFinancing = async (req, res) => {
         if(!listing) return res.status(404).json({ message: "Listing not found" });
 
         if (listing.sellerId !== req.user.id) return res.status(403).json({ message: "Unauthorized" });
-        if (listing.tier !== 'premium') return res.status(400).json({ message: "Only Premium sellers can request financing" });
+        if (listing.tier !== 'premium') return res.status(400).json({ message: "Only Premium sellers can request financing support" });
 
         await listing.update({ financing_requested: true });
         res.status(200).json({ success: true, message: "Financing request sent to agent" });
@@ -717,16 +945,22 @@ module.exports = (sequelize, DataTypes) => {
         net_profit: { type: DataTypes.DECIMAL(15, 2) },
         turnover: { type: DataTypes.DECIMAL(15, 2) },
         
-        // Private Data (Masked)
+        // Private Data
         legal_business_name: { type: DataTypes.STRING },
         full_address: { type: DataTypes.TEXT },
         owner_name: { type: DataTypes.STRING },
 
-        // Meta
+        // Tiering & SRS Deliverables
         tier: { 
             type: DataTypes.ENUM('basic', 'premium'), 
             defaultValue: 'basic' 
         },
+        // NEW fields based on SRS screenshot:
+        sale_pack_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Business assessments
+        financial_analysis_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Analysis & projections
+        legal_attestation_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Final arrangements
+        transfer_arrangements_ready: { type: DataTypes.BOOLEAN, defaultValue: false },
+
         status: { 
             type: DataTypes.ENUM('pending', 'active', 'sold', 'expired'), 
             defaultValue: 'pending' 
@@ -782,6 +1016,16 @@ module.exports = (sequelize, DataTypes) => {
             defaultValue: 'buyer' 
         },
         mobile: { type: DataTypes.STRING },
+        
+        // --- NEW FIELDS FOR OTP & APPROVAL ---
+        otp: { type: DataTypes.STRING, allowNull: true },
+        otp_expires_at: { type: DataTypes.DATE, allowNull: true },
+        is_verified: { type: DataTypes.BOOLEAN, defaultValue: false },
+        account_status: { 
+            type: DataTypes.ENUM('pending', 'active', 'rejected'), 
+            defaultValue: 'pending' 
+        },
+
         // Buyer Specific
         financial_means: { 
             type: DataTypes.ENUM('<100k', '100k-1M', '>1M'),
@@ -871,12 +1115,41 @@ module.exports = initCronJobs;
 </file>
 
 <file path="src/services/email.service.js">
-// In production, use 'nodemailer' or 'sendgrid'
+const nodemailer = require('nodemailer');
+
+// Create the transporter using credentials from .env
+const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT,
+    secure: process.env.SMTP_PORT == 465, // true for 465, false for other ports (587)
+    auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+    },
+});
+
 exports.sendEmail = async (to, subject, text) => {
-    console.log(`[EMAIL SERVICE] Sending to: ${to}`);
-    console.log(`Subject: ${subject}`);
-    console.log(`Body: ${text}`);
-    return true;
+    try {
+        const mailOptions = {
+            from: `"${process.env.FROM_NAME || 'BizTech Support'}" <${process.env.FROM_EMAIL}>`,
+            to: to,
+            subject: subject,
+            text: text, // Plain text body
+            html: `<div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+                    <h2 style="color: #0D1B2A;">BizTech Verification</h2>
+                    <p style="font-size: 16px;">${text}</p>
+                    <hr style="border: 1px solid #eee; margin: 20px 0;" />
+                    <small style="color: #999;">If you didn't request this code, please ignore this email.</small>
+                   </div>` // HTML body
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+        console.log(`✅ Email sent: ${info.messageId}`);
+        return true;
+    } catch (error) {
+        console.error("❌ Error sending email:", error);
+        return false;
+    }
 };
 </file>
 
