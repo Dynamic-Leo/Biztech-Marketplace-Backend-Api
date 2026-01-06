@@ -174,29 +174,6 @@ db.sequelize.sync({ alter: true }).then(() => {
 }
 </file>
 
-<file path="src/api/admin.routes.js">
-const express = require('express');
-const router = express.Router();
-const controller = require('../controllers/admin.controller');
-const { protect, authorize } = require('../middleware/auth.middleware');
-
-// Apply protection to all admin routes
-router.use(protect);
-router.use(authorize('admin'));
-
-// Stats & User Management
-router.get('/stats', controller.getDashboardStats);
-router.get('/users', controller.getUsers);
-router.put('/users/:id/status', controller.updateUserStatus);
-
-// Listing & Agent Management
-router.post('/create-agent', controller.createAgent);
-router.get('/pending-listings', controller.getPendingListings);
-router.post('/assign-agent', controller.assignAgent);
-
-module.exports = router;
-</file>
-
 <file path="src/api/auth.routes.js">
 const express = require('express');
 const router = express.Router();
@@ -221,26 +198,6 @@ router.post('/', protect, authorize('buyer'), controller.createLead);
 // Agent manages leads
 router.get('/agent/leads', protect, authorize('agent'), controller.getAgentLeads); // Note: path modified in main app router to /api/v1/agent/leads
 router.put('/agent/leads/:id', protect, authorize('agent'), controller.updateLeadStatus);
-
-module.exports = router;
-</file>
-
-<file path="src/api/listing.routes.js">
-const express = require('express');
-const router = express.Router();
-const controller = require('../controllers/listing.controller');
-const { protect, authorize } = require('../middleware/auth.middleware');
-
-router.post('/', protect, authorize('seller'), controller.createListing);
-router.get('/', controller.getListings); // Public Search
-
-// Optional middleware: If token exists, attach user, else continue as guest
-router.get('/:id', async (req, res, next) => {
-    if (req.headers.authorization) { await protect(req, res, next); } 
-    else { next(); }
-}, controller.getListingById);
-
-router.post('/:id/financing', protect, authorize('seller'), controller.requestFinancing);
 
 module.exports = router;
 </file>
@@ -294,128 +251,6 @@ module.exports = {
     dialect: process.env.DB_DIALECT,
     logging: false
   }
-};
-</file>
-
-<file path="src/controllers/admin.controller.js">
-const db = require('../models');
-const bcrypt = require('bcryptjs');
-const User = db.User;
-const Listing = db.Listing;
-
-// @desc    Get Admin Dashboard Stats (Dynamic Counts)
-exports.getDashboardStats = async (req, res) => {
-    try {
-        const totalUsers = await User.count();
-        const pendingApprovals = await User.count({ 
-            where: { account_status: 'pending', role: 'seller' } 
-        });
-        const activeListings = await Listing.count({ 
-            where: { status: 'active' } 
-        });
-        const totalAgents = await User.count({ 
-            where: { role: 'agent' } 
-        });
-        
-        // Dynamic Revenue Calculation: AED 499 for every active Premium listing
-        const premiumCount = await Listing.count({ 
-            where: { tier: 'premium', status: 'active' } 
-        });
-        const monthlyRevenue = premiumCount * 499;
-
-        res.status(200).json({
-            success: true,
-            data: {
-                totalUsers,
-                pendingApprovals,
-                activeListings,
-                totalAgents,
-                monthlyRevenue
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// @desc    Get All Users with Filters
-exports.getUsers = async (req, res) => {
-    try {
-        const { role, status } = req.query;
-        let whereClause = {};
-        if (role) whereClause.role = role;
-        if (status) whereClause.account_status = status;
-
-        const users = await User.findAll({ 
-            where: whereClause,
-            attributes: { exclude: ['password', 'otp'] },
-            order: [['createdAt', 'DESC']]
-        });
-        res.status(200).json({ success: true, data: users });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// @desc    Approve/Reject Seller Account
-exports.updateUserStatus = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { status } = req.body; // 'active' or 'rejected'
-
-        const user = await User.findByPk(id);
-        if (!user) return res.status(404).json({ message: "User not found" });
-
-        await user.update({ account_status: status });
-        res.status(200).json({ success: true, message: `User is now ${status}` });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// @desc    Get listings that need an agent assigned
-exports.getPendingListings = async (req, res) => {
-    try {
-        const listings = await Listing.findAll({
-            where: { status: 'pending' },
-            include: [{ model: User, as: 'Seller', attributes: ['name', 'email'] }]
-        });
-        res.status(200).json({ success: true, count: listings.length, data: listings });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// @desc    Assign Agent and Activate Ad
-exports.assignAgent = async (req, res) => {
-    try {
-        const { listingId, agentId } = req.body;
-        const listing = await Listing.findByPk(listingId);
-        if(!listing) return res.status(404).json({ message: "Listing not found" });
-
-        await listing.update({
-            assignedAgentId: agentId,
-            status: 'active' 
-        });
-
-        res.status(200).json({ success: true, message: "Agent assigned and Listing activated" });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-// @desc    Create Internal Agent Account
-exports.createAgent = async (req, res) => {
-    try {
-        const { name, email, password } = req.body;
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await User.create({ 
-            name, email, password: hashedPassword, role: 'agent', is_verified: true, account_status: 'active' 
-        });
-        res.status(201).json({ success: true, message: "Agent created" });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
 };
 </file>
 
@@ -666,116 +501,6 @@ exports.updateLeadStatus = async (req, res) => {
 };
 </file>
 
-<file path="src/controllers/listing.controller.js">
-const db = require('../models');
-const { Op } = require('sequelize');
-const Listing = db.Listing;
-const User = db.User;
-
-exports.createListing = async (req, res) => {
-    try {
-        const { 
-            title, industry, price, net_profit, turnover, region, 
-            legal_business_name, full_address, owner_name, tier 
-        } = req.body;
-
-        const listing = await Listing.create({
-            sellerId: req.user.id,
-            title, 
-            industry, 
-            price, 
-            net_profit, 
-            turnover, 
-            region,
-            legal_business_name, 
-            full_address, 
-            owner_name,
-            tier: tier || 'basic',
-            status: 'pending'
-        });
-
-        res.status(201).json({ success: true, data: listing });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.getListings = async (req, res) => {
-    try {
-        const { location, priceMax, industry, searchTerm } = req.query;
-        let whereClause = { status: 'active' };
-
-        if (location) whereClause.region = { [Op.like]: `%${location}%` };
-        if (industry) whereClause.industry = { [Op.like]: `%${industry}%` };
-        if (priceMax) whereClause.price = { [Op.lte]: priceMax };
-        if (searchTerm) whereClause.title = { [Op.like]: `%${searchTerm}%` };
-
-        const listings = await Listing.findAll({
-            where: whereClause,
-            order: [
-                // SRS: Paid Ads (Premium) get "Preferred Placement" on the list
-                [db.sequelize.literal("FIELD(tier, 'premium', 'basic')"), 'ASC'],
-                ['createdAt', 'DESC']
-            ],
-            // Masking Private Data from the public list for confidentiality
-            attributes: { exclude: ['legal_business_name', 'full_address', 'owner_name'] }
-        });
-
-        res.status(200).json({ success: true, count: listings.length, data: listings });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.getListingById = async (req, res) => {
-    try {
-        const listing = await Listing.findByPk(req.params.id);
-        if (!listing) return res.status(404).json({ message: "Listing not found" });
-
-        // Logic for Data Masking (Confidentiality)
-        // Private data is only visible to Admins, the Seller of the ad, or the Assigned Agent
-        let isAuthorized = false;
-        
-        if (req.user) {
-            if (req.user.role === 'admin') isAuthorized = true;
-            if (req.user.role === 'seller' && listing.sellerId === req.user.id) isAuthorized = true;
-            if (req.user.role === 'agent' && listing.assignedAgentId === req.user.id) isAuthorized = true;
-        }
-
-        let response = listing.toJSON();
-
-        if (!isAuthorized) {
-            // Mask Private Data if the viewer is not authorized
-            delete response.legal_business_name;
-            delete response.full_address;
-            delete response.owner_name;
-            
-            // Increment view count for public views
-            await listing.increment('views');
-        }
-
-        res.status(200).json({ success: true, data: response });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.requestFinancing = async (req, res) => {
-    try {
-        const listing = await Listing.findByPk(req.params.id);
-        if(!listing) return res.status(404).json({ message: "Listing not found" });
-
-        if (listing.sellerId !== req.user.id) return res.status(403).json({ message: "Unauthorized" });
-        if (listing.tier !== 'premium') return res.status(400).json({ message: "Only Premium sellers can request financing support" });
-
-        await listing.update({ financing_requested: true });
-        res.status(200).json({ success: true, message: "Financing request sent to agent" });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-</file>
-
 <file path="src/controllers/payment.controller.js">
 const db = require('../models');
 const Subscription = db.Subscription;
@@ -930,53 +655,6 @@ module.exports = (sequelize, DataTypes) => {
     };
 
     return Lead;
-};
-</file>
-
-<file path="src/models/Listing.js">
-module.exports = (sequelize, DataTypes) => {
-    const Listing = sequelize.define("Listing", {
-        id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
-        // Public Data
-        title: { type: DataTypes.STRING, allowNull: false },
-        industry: { type: DataTypes.STRING, allowNull: false },
-        region: { type: DataTypes.STRING, allowNull: false },
-        price: { type: DataTypes.DECIMAL(15, 2), allowNull: false },
-        net_profit: { type: DataTypes.DECIMAL(15, 2) },
-        turnover: { type: DataTypes.DECIMAL(15, 2) },
-        
-        // Private Data
-        legal_business_name: { type: DataTypes.STRING },
-        full_address: { type: DataTypes.TEXT },
-        owner_name: { type: DataTypes.STRING },
-
-        // Tiering & SRS Deliverables
-        tier: { 
-            type: DataTypes.ENUM('basic', 'premium'), 
-            defaultValue: 'basic' 
-        },
-        // NEW fields based on SRS screenshot:
-        sale_pack_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Business assessments
-        financial_analysis_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Analysis & projections
-        legal_attestation_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Final arrangements
-        transfer_arrangements_ready: { type: DataTypes.BOOLEAN, defaultValue: false },
-
-        status: { 
-            type: DataTypes.ENUM('pending', 'active', 'sold', 'expired'), 
-            defaultValue: 'pending' 
-        },
-        expiryDate: { type: DataTypes.DATE },
-        views: { type: DataTypes.INTEGER, defaultValue: 0 },
-        financing_requested: { type: DataTypes.BOOLEAN, defaultValue: false }
-    });
-
-    Listing.associate = (models) => {
-        Listing.belongsTo(models.User, { foreignKey: 'sellerId', as: 'Seller' });
-        Listing.belongsTo(models.User, { foreignKey: 'assignedAgentId', as: 'Agent' });
-        Listing.hasMany(models.Lead, { foreignKey: 'listingId', as: 'Leads' });
-    };
-
-    return Listing;
 };
 </file>
 
@@ -1150,6 +828,353 @@ exports.sendEmail = async (to, subject, text) => {
         console.error("❌ Error sending email:", error);
         return false;
     }
+};
+</file>
+
+<file path="src/api/admin.routes.js">
+const express = require('express');
+const router = express.Router();
+const controller = require('../controllers/admin.controller');
+const { protect, authorize } = require('../middleware/auth.middleware');
+
+// Apply protection to all admin routes
+router.use(protect);
+router.use(authorize('admin'));
+
+// Stats & User Management
+router.get('/stats', controller.getDashboardStats);
+router.get('/users', controller.getUsers);
+router.put('/users/:id/status', controller.updateUserStatus);
+
+// Listing & Agent Management
+router.post('/create-agent', controller.createAgent);
+router.get('/pending-listings', controller.getPendingListings);
+router.post('/assign-agent', controller.assignAgent);
+
+module.exports = router;
+</file>
+
+<file path="src/api/listing.routes.js">
+const express = require('express');
+const router = express.Router();
+const controller = require('../controllers/listing.controller');
+const { protect, authorize } = require('../middleware/auth.middleware');
+
+// 1. Specific routes MUST come before generic /:id routes
+router.get('/my-listings', protect, authorize('seller'), controller.getSellerListings);
+
+// 2. Creation and Public routes
+router.post('/', protect, authorize('seller'), controller.createListing);
+router.get('/', controller.getListings); 
+
+// 3. Generic ID route (moved to bottom)
+router.get('/:id', async (req, res, next) => {
+    if (req.headers.authorization) { 
+        await protect(req, res, next); 
+    } else { 
+        next(); 
+    }
+}, controller.getListingById);
+
+router.post('/:id/financing', protect, authorize('seller'), controller.requestFinancing);
+
+module.exports = router;
+</file>
+
+<file path="src/controllers/admin.controller.js">
+const db = require('../models');
+const bcrypt = require('bcryptjs');
+const User = db.User;
+const Listing = db.Listing;
+
+// @desc    Get Admin Dashboard Stats (Dynamic Counts)
+exports.getDashboardStats = async (req, res) => {
+    try {
+        const totalUsers = await User.count();
+        const pendingApprovals = await User.count({ 
+            where: { account_status: 'pending', role: 'seller' } 
+        });
+        const activeListings = await Listing.count({ 
+            where: { status: 'active' } 
+        });
+        const totalAgents = await User.count({ 
+            where: { role: 'agent' } 
+        });
+        
+        // Dynamic Revenue Calculation: AED 499 for every active Premium listing
+        const premiumCount = await Listing.count({ 
+            where: { tier: 'premium', status: 'active' } 
+        });
+        const monthlyRevenue = premiumCount * 499;
+
+        res.status(200).json({
+            success: true,
+            data: {
+                totalUsers,
+                pendingApprovals,
+                activeListings,
+                totalAgents,
+                monthlyRevenue
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get All Users with Filters
+exports.getUsers = async (req, res) => {
+    try {
+        const { role, status } = req.query;
+        let whereClause = {};
+        if (role) whereClause.role = role;
+        if (status) whereClause.account_status = status;
+
+        const users = await User.findAll({ 
+            where: whereClause,
+            attributes: { exclude: ['password', 'otp'] },
+            order: [['createdAt', 'DESC']]
+        });
+        res.status(200).json({ success: true, data: users });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Approve/Reject Seller Account
+exports.updateUserStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // 'active' or 'rejected'
+
+        const user = await User.findByPk(id);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        await user.update({ account_status: status });
+        res.status(200).json({ success: true, message: `User is now ${status}` });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Get listings that need an agent assigned
+exports.getPendingListings = async (req, res) => {
+    try {
+        const listings = await Listing.findAll({
+            where: { status: 'pending' },
+            include: [{ model: User, as: 'Seller', attributes: ['name', 'email'] }]
+        });
+        res.status(200).json({ success: true, count: listings.length, data: listings });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Assign Agent and Activate Ad
+exports.assignAgent = async (req, res) => {
+    try {
+        const { listingId, agentId } = req.body;
+        const listing = await Listing.findByPk(listingId);
+        if(!listing) return res.status(404).json({ message: "Listing not found" });
+
+        await listing.update({
+            assignedAgentId: agentId,
+            status: 'active' 
+        });
+
+        res.status(200).json({ success: true, message: "Agent assigned and Listing activated" });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Create Internal Agent Account
+exports.createAgent = async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await User.create({ 
+            name, email, password: hashedPassword, role: 'agent', is_verified: true, account_status: 'active' 
+        });
+        res.status(201).json({ success: true, message: "Agent created" });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+</file>
+
+<file path="src/controllers/listing.controller.js">
+const db = require('../models');
+const { Op } = require('sequelize');
+const Listing = db.Listing;
+const User = db.User;
+const Lead = db.Lead;
+
+// @desc    Get all listings belonging to the logged-in seller
+exports.getSellerListings = async (req, res) => {
+    try {
+        const listings = await Listing.findAll({
+            where: { sellerId: req.user.id },
+            include: [
+                {
+                    model: Lead,
+                    as: 'Leads',
+                    attributes: ['id']
+                }
+            ],
+            order: [['createdAt', 'DESC']]
+        });
+
+        res.status(200).json({ 
+            success: true, 
+            data: listings 
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.createListing = async (req, res) => {
+    try {
+        const { 
+            title, industry, price, net_profit, turnover, region, 
+            legal_business_name, full_address, owner_name, tier 
+        } = req.body;
+
+        const listing = await Listing.create({
+            sellerId: req.user.id,
+            title, 
+            industry, 
+            price, 
+            net_profit, 
+            turnover, 
+            region,
+            legal_business_name, 
+            full_address, 
+            owner_name,
+            tier: tier || 'basic',
+            status: 'pending'
+        });
+
+        res.status(201).json({ success: true, data: listing });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getListings = async (req, res) => {
+    try {
+        const { location, priceMax, industry, searchTerm } = req.query;
+        let whereClause = { status: 'active' };
+
+        if (location) whereClause.region = { [Op.like]: `%${location}%` };
+        if (industry) whereClause.industry = { [Op.like]: `%${industry}%` };
+        if (priceMax) whereClause.price = { [Op.lte]: priceMax };
+        if (searchTerm) whereClause.title = { [Op.like]: `%${searchTerm}%` };
+
+        const listings = await Listing.findAll({
+            where: whereClause,
+            order: [
+                [db.sequelize.literal("FIELD(tier, 'premium', 'basic')"), 'ASC'],
+                ['createdAt', 'DESC']
+            ],
+            attributes: { exclude: ['legal_business_name', 'full_address', 'owner_name'] }
+        });
+
+        res.status(200).json({ success: true, count: listings.length, data: listings });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.getListingById = async (req, res) => {
+    try {
+        const listing = await Listing.findByPk(req.params.id);
+        if (!listing) return res.status(404).json({ message: "Listing not found" });
+
+        let isAuthorized = false;
+        
+        if (req.user) {
+            if (req.user.role === 'admin') isAuthorized = true;
+            if (req.user.role === 'seller' && listing.sellerId === req.user.id) isAuthorized = true;
+            if (req.user.role === 'agent' && listing.assignedAgentId === req.user.id) isAuthorized = true;
+        }
+
+        let response = listing.toJSON();
+
+        if (!isAuthorized) {
+            delete response.legal_business_name;
+            delete response.full_address;
+            delete response.owner_name;
+            await listing.increment('views');
+        }
+
+        res.status(200).json({ success: true, data: response });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.requestFinancing = async (req, res) => {
+    try {
+        const listing = await Listing.findByPk(req.params.id);
+        if(!listing) return res.status(404).json({ message: "Listing not found" });
+
+        if (listing.sellerId !== req.user.id) return res.status(403).json({ message: "Unauthorized" });
+        if (listing.tier !== 'premium') return res.status(400).json({ message: "Only Premium sellers can request financing support" });
+
+        await listing.update({ financing_requested: true });
+        res.status(200).json({ success: true, message: "Financing request sent to agent" });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+</file>
+
+<file path="src/models/Listing.js">
+module.exports = (sequelize, DataTypes) => {
+    const Listing = sequelize.define("Listing", {
+        id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+        // Public Data
+        title: { type: DataTypes.STRING, allowNull: false },
+        industry: { type: DataTypes.STRING, allowNull: false },
+        region: { type: DataTypes.STRING, allowNull: false },
+        price: { type: DataTypes.DECIMAL(15, 2), allowNull: false },
+        net_profit: { type: DataTypes.DECIMAL(15, 2) },
+        turnover: { type: DataTypes.DECIMAL(15, 2) },
+        
+        // Private Data
+        legal_business_name: { type: DataTypes.STRING },
+        full_address: { type: DataTypes.TEXT },
+        owner_name: { type: DataTypes.STRING },
+
+        // Tiering & SRS Deliverables
+        tier: { 
+            type: DataTypes.ENUM('basic', 'premium'), 
+            defaultValue: 'basic' 
+        },
+        // NEW fields based on SRS screenshot:
+        sale_pack_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Business assessments
+        financial_analysis_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Analysis & projections
+        legal_attestation_ready: { type: DataTypes.BOOLEAN, defaultValue: false }, // Final arrangements
+        transfer_arrangements_ready: { type: DataTypes.BOOLEAN, defaultValue: false },
+
+        status: { 
+            type: DataTypes.ENUM('pending', 'active', 'sold', 'expired'), 
+            defaultValue: 'pending' 
+        },
+        expiryDate: { type: DataTypes.DATE },
+        views: { type: DataTypes.INTEGER, defaultValue: 0 },
+        financing_requested: { type: DataTypes.BOOLEAN, defaultValue: false }
+    });
+
+    Listing.associate = (models) => {
+        Listing.belongsTo(models.User, { foreignKey: 'sellerId', as: 'Seller' });
+        Listing.belongsTo(models.User, { foreignKey: 'assignedAgentId', as: 'Agent' });
+        Listing.hasMany(models.Lead, { foreignKey: 'listingId', as: 'Leads' });
+    };
+
+    return Listing;
 };
 </file>
 

@@ -66,3 +66,16 @@ exports.updateLeadStatus = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.getBuyerEnquiries = async (req, res) => {
+    try {
+        const leads = await Lead.findAll({
+            where: { buyerId: req.user.id },
+            include: [{ model: Listing, as: 'Listing', attributes: ['title', 'id'] }],
+            order: [['createdAt', 'DESC']]
+        });
+        res.status(200).json({ success: true, data: leads });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};

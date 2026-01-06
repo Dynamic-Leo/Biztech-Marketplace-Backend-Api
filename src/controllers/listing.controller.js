@@ -4,6 +4,49 @@ const Listing = db.Listing;
 const User = db.User;
 const Lead = db.Lead;
 
+exports.getListings = async (req, res) => {
+    try {
+        const { location, minPrice, maxPrice, minProfit, industry, searchTerm } = req.query;
+        
+        let whereClause = { status: 'active' };
+
+        // Real Filter Logic
+        if (location) whereClause.region = { [Op.like]: `%${location}%` };
+        if (industry) whereClause.industry = industry;
+        
+        if (minPrice || maxPrice) {
+            whereClause.price = {};
+            if (minPrice) whereClause.price[Op.gte] = parseFloat(minPrice);
+            if (maxPrice) whereClause.price[Op.lte] = parseFloat(maxPrice);
+        }
+
+        if (minProfit) {
+            whereClause.net_profit = { [Op.gte]: parseFloat(minProfit) };
+        }
+
+        if (searchTerm) {
+            whereClause.title = { [Op.like]: `%${searchTerm}%` };
+        }
+
+        const listings = await Listing.findAll({
+            where: whereClause,
+            // SRS FR-B-002: Premium listings MUST appear at the top
+            order: [
+                [db.sequelize.literal("FIELD(tier, 'premium', 'basic')"), 'ASC'],
+                ['createdAt', 'DESC']
+            ],
+            // Mask private data for search results
+            attributes: { 
+                exclude: ['legal_business_name', 'full_address', 'owner_name'] 
+            }
+        });
+
+        res.status(200).json({ success: true, count: listings.length, data: listings });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
 // @desc    Get all listings belonging to the logged-in seller
 exports.getSellerListings = async (req, res) => {
     try {
@@ -123,3 +166,50 @@ exports.requestFinancing = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };  
+
+
+exports.getAgentAssignedListings = async (req, res) => {
+    try {
+        const listings = await Listing.findAll({
+            where: { assignedAgentId: req.user.id },
+            include: [{ model: User, as: 'Seller', attributes: ['name', 'email'] }],
+            order: [['updatedAt', 'DESC']]
+        });
+        res.status(200).json({ success: true, data: listings });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// @desc    Agent updates the status of deliverables (Sale Pack, etc.)
+exports.updateListingDeliverables = async (req, res) => {
+    try {
+        const listing = await Listing.findByPk(req.params.id);
+        if (!listing) return res.status(404).json({ message: "Listing not found" });
+
+        // Security Check: Only the assigned agent can update deliverables
+        if (listing.assignedAgentId !== req.user.id) {
+            return res.status(403).json({ message: "You are not the assigned agent for this listing" });
+        }
+
+        // We only allow updating deliverable-specific boolean fields
+        const allowedUpdates = [
+            'sale_pack_ready', 
+            'financial_analysis_ready', 
+            'legal_attestation_ready', 
+            'transfer_arrangements_ready'
+        ];
+
+        const updates = {};
+        Object.keys(req.body).forEach(key => {
+            if (allowedUpdates.includes(key)) {
+                updates[key] = req.body[key];
+            }
+        });
+
+        await listing.update(updates);
+        res.status(200).json({ success: true, data: listing });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};

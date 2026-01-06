@@ -17,7 +17,7 @@ exports.getDashboardStats = async (req, res) => {
             where: { role: 'agent' } 
         });
         
-        // Dynamic Revenue Calculation: AED 499 for every active Premium listing
+        // Revenue Calculation: Based on codebase AED 499 tier
         const premiumCount = await Listing.count({ 
             where: { tier: 'premium', status: 'active' } 
         });
@@ -43,6 +43,10 @@ exports.getUsers = async (req, res) => {
     try {
         const { role, status } = req.query;
         let whereClause = {};
+        
+        // Don't show admins in the general user management list
+        whereClause.role = { [db.Sequelize.Op.ne]: 'admin' };
+
         if (role) whereClause.role = role;
         if (status) whereClause.account_status = status;
 
@@ -61,7 +65,7 @@ exports.getUsers = async (req, res) => {
 exports.updateUserStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status } = req.body; // 'active' or 'rejected'
+        const { status } = req.body; 
 
         const user = await User.findByPk(id);
         if (!user) return res.status(404).json({ message: "User not found" });
@@ -93,9 +97,15 @@ exports.assignAgent = async (req, res) => {
         const listing = await Listing.findByPk(listingId);
         if(!listing) return res.status(404).json({ message: "Listing not found" });
 
+        // Update listing status and set expiry date to 30 days by default (or 90 for premium)
+        const validityDays = listing.tier === 'premium' ? 90 : 30;
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + validityDays);
+
         await listing.update({
             assignedAgentId: agentId,
-            status: 'active' 
+            status: 'active',
+            expiryDate: expiryDate
         });
 
         res.status(200).json({ success: true, message: "Agent assigned and Listing activated" });
@@ -108,10 +118,21 @@ exports.assignAgent = async (req, res) => {
 exports.createAgent = async (req, res) => {
     try {
         const { name, email, password } = req.body;
+        
+        // Check if exists
+        const exists = await User.findOne({ where: { email } });
+        if(exists) return res.status(400).json({ message: "Email already in use" });
+
         const hashedPassword = await bcrypt.hash(password, 10);
         await User.create({ 
-            name, email, password: hashedPassword, role: 'agent', is_verified: true, account_status: 'active' 
+            name, 
+            email, 
+            password: hashedPassword, 
+            role: 'agent', 
+            is_verified: true, 
+            account_status: 'active' 
         });
+
         res.status(201).json({ success: true, message: "Agent created" });
     } catch (error) {
         res.status(500).json({ message: error.message });

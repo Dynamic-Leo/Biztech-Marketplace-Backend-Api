@@ -21,4 +21,10 @@ router.get('/:id', async (req, res, next) => {
 
 router.post('/:id/financing', protect, authorize('seller'), controller.requestFinancing);
 
+// Agent assigned listings
+router.get('/agent/assigned', protect, authorize('agent'), controller.getAgentAssignedListings);
+
+// Agent update deliverables (Sale pack etc)
+router.patch('/:id/deliverables', protect, authorize('agent'), controller.updateListingDeliverables);
+
 module.exports = router;

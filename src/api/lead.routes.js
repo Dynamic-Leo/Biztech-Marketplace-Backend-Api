@@ -5,6 +5,8 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 
 // Buyer creates lead
 router.post('/', protect, authorize('buyer'), controller.createLead);
+router.get('/my-enquiries', protect, authorize('buyer'), controller.getBuyerEnquiries); // New
+
 
 // Agent manages leads
 router.get('/agent/leads', protect, authorize('agent'), controller.getAgentLeads); // Note: path modified in main app router to /api/v1/agent/leads
