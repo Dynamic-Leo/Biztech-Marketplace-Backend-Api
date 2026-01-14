@@ -10,10 +10,27 @@ module.exports = (sequelize, DataTypes) => {
         },
         mobile: { type: DataTypes.STRING },
         
-        // --- NEW FIELDS FOR OTP & APPROVAL ---
-        otp: { type: DataTypes.STRING, allowNull: true },
-        otp_expires_at: { type: DataTypes.DATE, allowNull: true },
-        is_verified: { type: DataTypes.BOOLEAN, defaultValue: false },
+        emailVerificationToken: {
+            type: DataTypes.STRING,
+            allowNull: true
+        },
+        emailVerificationTokenExpiry: {
+            type: DataTypes.DATE,
+            allowNull: true
+        },
+        isEmailVerified: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false
+        },
+        resetPasswordToken: {
+            type: DataTypes.STRING,
+            allowNull: true
+        },
+        resetPasswordExpire: {
+            type: DataTypes.DATE,
+            allowNull: true
+        },
+        
         account_status: { 
             type: DataTypes.ENUM('pending', 'active', 'rejected'), 
             defaultValue: 'pending' 
