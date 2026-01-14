@@ -1,6 +1,8 @@
 const db = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const axios = require('axios');
 const { sendEmail } = require('../services/email.service');
 const { Op } = require('sequelize');
 const User = db.User;
