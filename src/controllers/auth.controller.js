@@ -51,7 +51,7 @@ exports.register = async (req, res) => {
 
          // calling email micro-service to send verification email
         axios.post(`${process.env.EMAIL_SERVICE_URL}/api/send/verification-email`, {
-            email: user.email,
+            email: email,
             emailVerificationToken: emailVerificationToken,
             domainName: process.env.FRONTEND_URL
         }).catch(err => {
