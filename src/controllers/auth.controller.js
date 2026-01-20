@@ -1,6 +1,8 @@
 const db = require('../models');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const axios = require('axios');
 const { sendEmail } = require('../services/email.service');
 const { Op } = require('sequelize');
 const User = db.User;
@@ -29,9 +31,8 @@ exports.register = async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Generate OTP (Expires in 10 minutes)
-        const otp = generateOTP();
-        const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
+        const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+        const emailVerificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
         // Create User (Not verified yet)
         await User.create({
@@ -42,14 +43,20 @@ exports.register = async (req, res) => {
             mobile,
             agreed_commission, 
             financial_means,
-            otp: otp,
-            otp_expires_at: otpExpires,
-            is_verified: false,
+            emailVerificationToken,
+            emailVerificationTokenExpiry,
+            isEmailVerified: false,
             account_status: 'pending' // Everyone starts pending until email verified
         });
 
-        // Send OTP Email
-        await sendEmail(email, "Verify Your Account", `Your OTP is: ${otp}. It expires in 10 minutes.`);
+         // calling email micro-service to send verification email
+        axios.post(`${process.env.EMAIL_SERVICE_URL}/api/send/verification-email`, {
+            email: email,
+            emailVerificationToken: emailVerificationToken,
+            domainName: process.env.FRONTEND_URL
+        }).catch(err => {
+            console.error("Failed to call email micro-service", err);
+        });
 
         res.status(201).json({
             success: true,
@@ -64,78 +71,46 @@ exports.register = async (req, res) => {
 };
 
 exports.verifyEmail = async (req, res) => {
-    try {
-        const { email, otp } = req.body;
+    const { token } = req.params;
 
-        const user = await User.findOne({ where: { email } });
+    if ( !token || token.length !== 64) {
+        return res.status(400).json({ message: "Invalid or missing token" });
+    }
+
+    try {
+        const user = await User.findOne({ 
+            where: { 
+                emailVerificationToken: token, 
+                emailVerificationTokenExpiry: { [Op.gt]: new Date() } 
+            } 
+        });
 
         if (!user) {
-            return res.status(404).json({ message: "User not found" });
+            return res.status(400).json({ success: false, message: "Invalid or expired verification token." });
         }
 
-        if (user.is_verified) {
-            return res.status(400).json({ message: "User is already verified" });
+        user.isEmailVerified = true;
+        user.emailVerificationToken = null;
+        user.emailVerificationTokenExpiry = null;
+
+        let message;
+
+        switch (user.role) {
+            case 'buyer':
+                user.account_status = 'active';
+                message = "Email verified and logged in successfully.";
+                break;
+            case 'seller':
+                user.account_status = 'pending';    
+                message = "Email verified. Your account is pending Admin approval.";
+                break;
+            default:
+                return res.status(400).json({ success: false, message: "Invalid user role." });
         }
-
-        // Check OTP and Expiry
-        if (user.otp !== otp) {
-            return res.status(400).json({ message: "Invalid OTP" });
-        }
-
-        if (new Date() > user.otp_expires_at) {
-            return res.status(400).json({ message: "OTP has expired" });
-        }
-
-        // Update User Status
-        let responseData = {};
-        
-        if (user.role === 'buyer') {
-            // Buyers are automatically activated after email verification
-            await user.update({
-                is_verified: true,
-                account_status: 'active',
-                otp: null,
-                otp_expires_at: null
-            });
-
-            // Log them in immediately
-            const token = generateToken(user.id);
-            responseData = {
-                success: true,
-                message: "Email verified and logged in successfully.",
-                token,
-                user: { id: user.id, name: user.name, role: user.role, status: 'active' }
-            };
-
-        } else if (user.role === 'seller') {
-            // Sellers verified email, but still need Admin approval
-            await user.update({
-                is_verified: true,
-                account_status: 'pending', // Remains pending for Admin
-                otp: null,
-                otp_expires_at: null
-            });
-
-            responseData = {
-                success: true,
-                message: "Email verified. Your account is pending Admin approval.",
-                requireApproval: true
-            };
-        } else {
-            // Agent/Admin flow (if applicable)
-             await user.update({
-                is_verified: true,
-                account_status: 'pending',
-                otp: null,
-                otp_expires_at: null
-            });
-             responseData = { success: true, message: "Verified." };
-        }
-
-        res.status(200).json(responseData);
-
-    } catch (error) {
-        res.status(500).json({ message: error.message });
+        await user.save();
+        res.status(200).json({ success: true, message: message });
+    } catch (error) { 
+        return res.status(500).json({ success: false, message: "Server error. Please try again later." });
     }
 };
 
@@ -149,8 +124,23 @@ exports.login = async (req, res) => {
         }
 
         // Check if Email Verified
-        if (!user.is_verified) {
-            return res.status(403).json({ message: "Please verify your email address first." });
+        if (!user.isEmailVerified) {
+            const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+            const emailVerificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            
+            user.emailVerificationToken = emailVerificationToken;
+            user.emailVerificationTokenExpiry = emailVerificationTokenExpiry;
+            await user.save();
+
+            // calling email micro-service to send verification email
+            axios.post(`${process.env.EMAIL_SERVICE_URL}/api/send/verification-email`, {
+                email: user.email,
+                emailVerificationToken: emailVerificationToken,
+                domainName: process.env.FRONTEND_URL
+            }).catch(err => {
+                console.error("Failed to call email micro-service");
+            });
+            return res.status(403).json({ message: "Email not verified. Please verify your email before logging in." });
         }
 
         // Check Account Status (For Sellers waiting for admin)
@@ -165,9 +155,98 @@ exports.login = async (req, res) => {
         res.json({
             success: true,
             token: generateToken(user.id),
-            user: { id: user.id, name: user.name, role: user.role }
+            user: { id: user.id, name: user.name, role: user.role, is_verified: user.is_verified}
         });
     } catch (error) {
         res.status(500).json({ message: error.message });
     }
+};
+
+
+// Reset Password
+exports.resetPassword = async (req, res) => {
+  const { password } = req.body;
+  
+  if (!password) {
+    return res.status(400).json({ success: false, message: "Password is required." });
+  }
+
+  try {
+    const resetPasswordToken = crypto.createHash("sha256").update(req.params.resettoken).digest("hex");
+
+    const user = await User.findOne({
+      where: {
+        resetPasswordToken,
+        resetPasswordExpire: { [Op.gt]: new Date() },
+      },
+    });
+
+    if (!user) {
+      return res.status(400).json({ success: false, message: "Invalid or expired token" });
+    }
+
+    // Validate password strength
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?":{}|<>]).{8,}$/;
+    if (!passwordRegex.test(password)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long, contain at least one lowercase letter, one uppercase letter, one digit, and one special character.'
+      });
+    }
+
+    // Hash the new password
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(password, salt);
+    user.resetPasswordToken = null;
+    user.resetPasswordExpire = null;
+    await user.save();
+
+    res.status(200).json({ success: true, message: "Password reset successful" });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    res.status(500).json({ success: false, message: "Error resetting password" });
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  const { email } = req.body;
+  
+  if (!email) {
+    return res.status(400).json({ success: false, message: "Email is required." });
+  }
+
+  try {
+    const user = await User.findOne({ where: { email } });
+
+    if (user) {
+
+        const resetToken = crypto.randomBytes(32).toString('hex');
+            
+        // Set fields matching model definition
+        user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+        user.passwordResetTokenExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+        
+        try {
+            await user.save();
+        } catch (dbError) {
+            user.rollback(); 
+            console.error("DB Save Error (Forgot Password):", dbError);
+            return res.status(500).json({ message: "Database Error: Unable to save reset token." });
+        }
+
+        axios.post(`${getEmailServiceUrl()}/api/send/password-reset-email`, {
+            email: user.email,
+            passwordResetToken: resetToken,
+            domainName: process.env.FRONTEND_URL,
+        }).catch(err => console.error("Email Service Error (Forgot Password):", err.message));
+    }
+
+    res.status(200).json({ 
+      success: true,
+      message: "If an account with that email exists, a password reset link has been sent." 
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({ success: false, message: "Server error processing request." });
+  }
 };
