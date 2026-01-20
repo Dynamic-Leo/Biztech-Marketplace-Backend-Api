@@ -4,12 +4,12 @@ module.exports = (sequelize, DataTypes) => {
         name: { type: DataTypes.STRING, allowNull: false },
         email: { type: DataTypes.STRING, allowNull: false, unique: true, validate: { isEmail: true } },
         password: { type: DataTypes.STRING, allowNull: false },
-        role: { 
-            type: DataTypes.ENUM('admin', 'agent', 'seller', 'buyer'), 
-            defaultValue: 'buyer' 
+        role: {
+            type: DataTypes.ENUM('admin', 'agent', 'seller', 'buyer'),
+            defaultValue: 'buyer'
         },
         mobile: { type: DataTypes.STRING },
-        
+
         emailVerificationToken: {
             type: DataTypes.STRING,
             allowNull: true
@@ -18,6 +18,8 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.DATE,
             allowNull: true
         },
+        company_name: { type: DataTypes.STRING, allowNull: true },
+        address: { type: DataTypes.TEXT, allowNull: true },
         isEmailVerified: {
             type: DataTypes.BOOLEAN,
             defaultValue: false
@@ -30,21 +32,21 @@ module.exports = (sequelize, DataTypes) => {
             type: DataTypes.DATE,
             allowNull: true
         },
-        
-        account_status: { 
-            type: DataTypes.ENUM('pending', 'active', 'rejected'), 
-            defaultValue: 'pending' 
+
+        account_status: {
+            type: DataTypes.ENUM('pending', 'active', 'rejected'),
+            defaultValue: 'pending'
         },
 
         // Buyer Specific
-        financial_means: { 
+        financial_means: {
             type: DataTypes.ENUM('<100k', '100k-1M', '>1M'),
             allowNull: true
         },
         // Seller Specific
-        agreed_commission: { 
-            type: DataTypes.BOOLEAN, 
-            defaultValue: false 
+        agreed_commission: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false
         }
     });
 
