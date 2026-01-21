@@ -5,7 +5,7 @@ const { protect, authorize } = require('../middleware/auth.middleware');
 
 // Buyer creates lead
 router.post('/', protect, authorize('buyer'), controller.createLead);
-router.get('/my-enquiries', protect, authorize('buyer'), controller.getBuyerEnquiries); // New
+router.get('/leads/my-enquiries', protect, authorize('buyer'), controller.getBuyerEnquiries);
 
 
 // Agent manages leads

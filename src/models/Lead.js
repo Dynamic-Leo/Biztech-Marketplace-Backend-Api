@@ -3,7 +3,7 @@ module.exports = (sequelize, DataTypes) => {
         id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
         message: { type: DataTypes.TEXT, allowNull: false },
         status: { 
-            type: DataTypes.ENUM('new', 'contacted', 'closed'), 
+            type: DataTypes.ENUM('new', 'contacted', 'negotiating', 'closed'), 
             defaultValue: 'new' 
         }
     });

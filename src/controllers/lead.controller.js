@@ -2,17 +2,41 @@ const db = require('../models');
 const Lead = db.Lead;
 const Listing = db.Listing;
 const User = db.User;
+const { Op } = require('sequelize');
 
 exports.createLead = async (req, res) => {
     try {
         const { listingId, message } = req.body;
-        
+        const buyerId = req.user.id;
+
+        // Check if listing exists
         const listing = await Listing.findByPk(listingId);
         if (!listing) return res.status(404).json({ message: "Listing not found" });
 
+        // Check for recent enquiry (last 7 days)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+        const existingLead = await Lead.findOne({
+            where: {
+                listingId,
+                buyerId,
+                createdAt: {
+                    [Op.gte]: sevenDaysAgo // Greater than or equal to 7 days ago
+                }
+            }
+        });
+
+        if (existingLead) {
+            return res.status(400).json({ 
+                message: "You have already enquired about this business recently. Please wait 7 days before enquiring again." 
+            });
+        }
+
+        // Create new lead
         const lead = await Lead.create({
             listingId,
-            buyerId: req.user.id,
+            buyerId,
             message
         });
 
