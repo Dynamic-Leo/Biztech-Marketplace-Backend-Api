@@ -18,15 +18,16 @@ app.use(helmet());
 // We allow the specific frontend origin to send credentials (cookies/headers)
 const corsOptions = {
   origin: [
-    'https://marketplace.biztech.ae',      // <--- ADD THIS (Your Production Frontend)
-    'http://localhost:5173',               // <--- ADD THIS (Your Local Development)
-    'https://api.marketplace.biztech.ae',  // Your API Domain
-    process.env.CLIENT_URL                 // Environment variable fallback
+    'https://marketplace.biztech.ae',      // Production Frontend (Exact match)
+    'https://www.marketplace.biztech.ae',  // WWW version just in case
+    'https://api.marketplace.biztech.ae',  // Self
+    'http://localhost:5173'                // Localhost
   ],
   credentials: true, 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 };
+
 app.use(cors(corsOptions));
 
 // 3. Rate Limiting
