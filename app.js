@@ -11,6 +11,8 @@ const initCronJobs = require('./src/services/cron.service');
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 // 1. Security Headers
 app.use(helmet());
 
